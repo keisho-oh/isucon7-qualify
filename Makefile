@@ -1,4 +1,6 @@
 run_local_db:
+	touch db/log/tmp.log
+	rm db/log/*.log
 	docker-compose -f docker-compose-local.yml up -d --build db
 
 run_local_server:

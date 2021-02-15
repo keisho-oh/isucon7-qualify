@@ -35,6 +35,8 @@ services:
   db:
     build:
       context: ./db
+    volumes:
+      - ./db/log:/var/log/mysql
     ports:
       - "3306"
     networks:
