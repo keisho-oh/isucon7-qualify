@@ -29,7 +29,7 @@ docker-compose up
 `docker-compose-bench.yml` の `command` のIPを上のサーバのものに書き換えて実行する
 
 # todo
-- [ ] alpでアクセスログ解析をする方法を確認
+- [x] alpでアクセスログ解析をする方法を確認
 - [ ] slow-queryの見方を確認
 - [ ] しょぼいバグ, index, N+1とかの定番的な問題を潰す
 - [ ] redisを使う
