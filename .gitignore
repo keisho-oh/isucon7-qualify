@@ -8,3 +8,4 @@ bench/isucon7q-initial-dataset.sql.gz
 bench/result.json
 webapp/perl/local
 web/log/*
+db/log/*
