@@ -3,12 +3,20 @@ ISUCON7 予選問題
 # ローカル
 ```
 docker-compose -f docker-compose-local.yml build
-docker-compose up -d db
-docker-compose up -d app
-docker-compose up -d web
-docker-compose up -d bench # ベンチマークを動かす
+make run_local_db
+make run_local_server
+make run_local_bench
 ```
 あとは `webapp` 以下をチューニングする
+
+## alpでリクエストごとのメトリクスをみる
+参考: https://nishinatoshiharu.com/install-alp-to-nginx/
+```
+docker-compose -f docker-compose-local.yml exec web bash
+$ alp -r -f /var/log/nginx/access.log # maxの降順
+$ alp --sum -r -f /var/log/nginx/access.log # sumの降順
+$ alp --sum -r -f /var/log/nginx/access.log --aggregates='/icons/.＊' # /icons/.* をまとめる 
+```
 
 # サーバに対してベンチマークを投げる
 git, dockerの設定は出来てると仮定する
@@ -23,5 +31,5 @@ docker-compose up
 # todo
 - [ ] alpでアクセスログ解析をする方法を確認
 - [ ] slow-queryの見方を確認
-- [ ] N+1とかの定番的な問題を潰す
+- [ ] しょぼいバグ, index, N+1とかの定番的な問題を潰す
 - [ ] redisを使う

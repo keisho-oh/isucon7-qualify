@@ -10,6 +10,8 @@ services:
   web:
     build:
       context: ./web
+    volumes:
+      - ./web/log:/var/log/nginx/
     networks:
       - frontend
       - backend
