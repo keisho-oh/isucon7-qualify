@@ -18,7 +18,9 @@ RUN apt-get -qq update && \
     apt-get -qq -y install percona-toolkit
 
 COPY my.cnf /etc/my.cnf
-COPY --from=build-dev /home/isucon/isubata/db/isubata.sql /docker-entrypoint-initdb.d/01_isubata.sql
+# COPY --from=build-dev /home/isucon/isubata/db/isubata.sql /docker-entrypoint-initdb.d/01_isubata.sql
+# COPY init.sh /docker-entrypoint-initdb.d/init.sh 
+COPY 01_isubata.sql /docker-entrypoint-initdb.d/01_isubata.sql
 COPY --from=build-dev /home/isucon/isubata/bench/isucon7q-initial-dataset.sql.gz /docker-entrypoint-initdb.d/isucon7q-initial-dataset.sql.gz 
 
 CMD ["--character-set-server=utf8mb4"]

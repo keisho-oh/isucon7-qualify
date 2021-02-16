@@ -442,37 +442,72 @@ func fetchUnread(c echo.Context) error {
 		return c.NoContent(http.StatusForbidden)
 	}
 
-	time.Sleep(time.Second)
-
-	channels, err := queryChannels()
-	if err != nil {
-		return err
+	type Row struct {
+		ChannelID int64 `db:"channel_id"`
+		Cnt       int64 `db:"cnt"`
 	}
-
 	resp := []map[string]interface{}{}
 
-	for _, chID := range channels {
-		lastID, err := queryHaveRead(userID, chID)
+	var row Row
+	// process haveread
+	rows, err := db.Queryx(`
+	SELECT
+		message.channel_id, COUNT(1) AS cnt
+	FROM message
+	JOIN (
+		SELECT channel_id, message_id AS last_message_id
+		FROM haveread
+		WHERE user_id = ?
+	) AS channel_haveread ON message.channel_id = channel_haveread.channel_id
+	WHERE last_message_id < id
+	GROUP BY channel_id
+	`, userID)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for rows.Next() {
+		err := rows.StructScan(&row)
 		if err != nil {
-			return err
+			log.Fatal(err)
 		}
 
-		var cnt int64
-		if lastID > 0 {
-			err = db.Get(&cnt,
-				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ? AND ? < id",
-				chID, lastID)
-		} else {
-			err = db.Get(&cnt,
-				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ?",
-				chID)
-		}
-		if err != nil {
-			return err
-		}
 		r := map[string]interface{}{
-			"channel_id": chID,
-			"unread":     cnt}
+			"channel_id": row.ChannelID,
+			"unread":     row.Cnt,
+		}
+		resp = append(resp, r)
+	}
+
+	// process non-haveread
+	rows, err = db.Queryx(`
+	SELECT
+		message.channel_id, COUNT(1) AS cnt
+	FROM message
+	LEFT JOIN (
+		SELECT channel_id, message_id AS last_message_id
+		FROM haveread
+		WHERE user_id = ?
+	) channel_haveread ON message.channel_id = channel_haveread.channel_id
+	WHERE last_message_id = NULL
+	GROUP BY channel_id
+	`, userID)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for rows.Next() {
+		err := rows.StructScan(&row)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		r := map[string]interface{}{
+			"channel_id": row.ChannelID,
+			"unread":     row.Cnt,
+		}
 		resp = append(resp, r)
 	}
 

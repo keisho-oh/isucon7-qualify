@@ -22,6 +22,8 @@ services:
   app:
     build:
       context: ./webapp
+    volumes:
+      - ./webapp/go/src:/home/isucon/isubata/webapp/go/src
     ports:
       - "5000"
     networks:

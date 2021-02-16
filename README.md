@@ -3,9 +3,9 @@ ISUCON7 予選問題
 # ローカル
 ```
 docker-compose -f docker-compose-local.yml build
-make run_local_db
-make run_local_server
-make run_local_bench
+make run-db
+make run-server
+make run-bench
 ```
 あとは `webapp` 以下をチューニングする
 
@@ -15,8 +15,9 @@ make run_local_bench
 - https://thinkit.co.jp/article/9617
 ```
 docker-compose -f docker-compose-local.yml exec web bash
-$ alp -r -f /var/log/nginx/access.log # maxの降順
+$ alp -r -f /var/log/nginx/access.log # maxの降順 
 $ alp --sum -r -f /var/log/nginx/access.log # sumの降順
+$ alp --avg -r -f /var/log/nginx/access.log # avgの降順
 $ alp --sum -r -f /var/log/nginx/access.log --aggregates='/icons/.＊' # /icons/.* をまとめる 
 ```
 
