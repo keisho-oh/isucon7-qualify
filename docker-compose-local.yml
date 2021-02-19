@@ -12,6 +12,7 @@ services:
       context: ./web
     volumes:
       - ./web/log:/var/log/nginx/
+      - ./webapp/img:/home/isucon/isubata/webapp/public/icons
     networks:
       - frontend
       - backend

@@ -840,7 +840,7 @@ func main() {
 
 	e.GET("add_channel", getAddChannel)
 	e.POST("add_channel", postAddChannel)
-	e.GET("/icons/:file_name", getIcon)
+	// e.GET("/icons/:file_name", getIcon)
 
 	e.GET("/extract_img", extractImg)
 
