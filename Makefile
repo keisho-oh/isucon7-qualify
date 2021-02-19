@@ -5,6 +5,8 @@ run-server:
 	touch web/log/error.log
 	touch db/log/tmp.log
 	rm db/log/*.log
+	rm -rf webapp/img
+	cp -r webapp/img_init webapp/img
 	docker-compose -f docker-compose-local.yml up -d --build
 	# docker-compose -f docker-compose-local.yml up -d db
 	# docker-compose -f docker-compose-local.yml up -d db

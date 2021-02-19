@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	crand "crypto/rand"
 	"crypto/sha1"
 	"database/sql"
@@ -13,6 +14,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -175,6 +177,9 @@ redirect:
 }
 
 const LettersAndDigits = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+const baseSaveDir = "/home/isucon/isubata/webapp/"
+const saveDir = baseSaveDir + "img/"
+const saveInitDir = baseSaveDir + "img_init/"
 
 func randomString(n int) string {
 	b := make([]byte, n)
@@ -442,6 +447,8 @@ func fetchUnread(c echo.Context) error {
 		return c.NoContent(http.StatusForbidden)
 	}
 
+	time.Sleep(time.Second)
+
 	type Row struct {
 		ChannelID int64 `db:"channel_id"`
 		Cnt       int64 `db:"cnt"`
@@ -697,10 +704,18 @@ func postProfile(c echo.Context) error {
 	}
 
 	if avatarName != "" && len(avatarData) > 0 {
-		_, err := db.Exec("INSERT INTO image (name, data) VALUES (?, ?)", avatarName, avatarData)
+		var data []byte
+		_, err := db.Exec("INSERT INTO image (name, data) VALUES (?, ?)", avatarName, data)
 		if err != nil {
 			return err
 		}
+		savePath := saveDir + avatarName
+		file, err := os.Create(savePath)
+		defer file.Close()
+
+		r := bytes.NewReader(avatarData)
+		io.Copy(file, r)
+
 		_, err = db.Exec("UPDATE user SET avatar_icon = ? WHERE id = ?", avatarName, self.ID)
 		if err != nil {
 			return err
@@ -719,14 +734,18 @@ func postProfile(c echo.Context) error {
 
 func getIcon(c echo.Context) error {
 	var name string
-	var data []byte
-	err := db.QueryRow("SELECT name, data FROM image WHERE name = ?",
-		c.Param("file_name")).Scan(&name, &data)
+	err := db.QueryRow("SELECT name FROM image WHERE name = ?",
+		c.Param("file_name")).Scan(&name)
 	if err == sql.ErrNoRows {
 		return echo.ErrNotFound
 	}
 	if err != nil {
 		return err
+	}
+
+	data, err := ioutil.ReadFile(saveDir + name)
+	if err != nil {
+		c.Logger().Fatal("error occurred")
 	}
 
 	mime := ""
@@ -741,6 +760,38 @@ func getIcon(c echo.Context) error {
 		return echo.ErrNotFound
 	}
 	return c.Blob(http.StatusOK, mime, data)
+}
+
+func extractImg(c echo.Context) error {
+	var names []string
+	err := db.Select(&names, "SELECT name FROM image")
+
+	if err != nil {
+		return err
+	}
+
+	for _, name := range names {
+		var data []byte
+		err := db.QueryRow("SELECT data FROM image WHERE name = ?", name).Scan(&data)
+
+		if err != nil {
+			return err
+		}
+
+		savePath := saveInitDir + name
+		file, err := os.Create(savePath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		r := bytes.NewReader(data)
+		io.Copy(file, r)
+	}
+
+	exec.Command("cp", "-r", saveInitDir+"/*.*", saveDir).Run()
+
+	return c.String(http.StatusOK, "success")
 }
 
 func tAdd(a, b int64) int64 {
@@ -790,6 +841,8 @@ func main() {
 	e.GET("add_channel", getAddChannel)
 	e.POST("add_channel", postAddChannel)
 	e.GET("/icons/:file_name", getIcon)
+
+	e.GET("/extract_img", extractImg)
 
 	e.Start(":5000")
 }

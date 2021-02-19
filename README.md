@@ -9,6 +9,9 @@ make run-bench
 ```
 あとは `webapp` 以下をチューニングする
 
+## テーブルに入ってる画像データを取り出す
+上の方法でサーバーを立ち上げたあとブラウザで `localhost/extract_img` を開く。 `webapp/img`, `webapp/img_init` に画像が保存される
+
 ## alpでリクエストごとのメトリクスをみる
 参考:
 - https://nishinatoshiharu.com/install-alp-to-nginx/

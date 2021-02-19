@@ -9,3 +9,5 @@ bench/result.json
 webapp/perl/local
 web/log/*
 db/log/*
+webapp/img/*
+webapp/img_init/*

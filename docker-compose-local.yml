@@ -24,6 +24,8 @@ services:
       context: ./webapp
     volumes:
       - ./webapp/go/src:/home/isucon/isubata/webapp/go/src
+      - ./webapp/img:/home/isucon/isubata/webapp/img
+      - ./webapp/img_init:/home/isucon/isubata/webapp/img_init
     ports:
       - "5000"
     networks:
