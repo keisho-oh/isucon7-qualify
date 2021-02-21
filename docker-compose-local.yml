@@ -48,6 +48,15 @@ services:
       - backend
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+  redis:
+    build:
+      context: ./redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis/data:/data
+    networks:
+      - backend
 networks:
   frontend:
   backend:

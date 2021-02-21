@@ -7,6 +7,13 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"fmt"
+	"github.com/go-redis/redis"
+	"github.com/go-sql-driver/mysql"
+	"github.com/gorilla/sessions"
+	"github.com/jmoiron/sqlx"
+	"github.com/labstack/echo"
+	"github.com/labstack/echo-contrib/session"
+	"github.com/labstack/echo/middleware"
 	"html/template"
 	"io"
 	"io/ioutil"
@@ -18,13 +25,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/go-sql-driver/mysql"
-	"github.com/gorilla/sessions"
-	"github.com/jmoiron/sqlx"
-	"github.com/labstack/echo"
-	"github.com/labstack/echo-contrib/session"
-	"github.com/labstack/echo/middleware"
 )
 
 const (
@@ -35,6 +35,8 @@ var (
 	db            *sqlx.DB
 	ErrBadReqeust = echo.NewHTTPError(http.StatusBadRequest)
 )
+
+var rclient *redis.Client
 
 type Renderer struct {
 	templates *template.Template
@@ -82,6 +84,12 @@ func init() {
 
 	db.SetMaxOpenConns(20)
 	db.SetConnMaxLifetime(5 * time.Minute)
+
+	rclient = redis.NewClient(&redis.Options{
+		Addr:     "redis:6379",
+		Password: "",
+		DB:       0,
+	})
 	log.Printf("Succeeded to connect db.")
 }
 
@@ -113,6 +121,7 @@ func addMessage(channelID, userID int64, content string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	incrChannelCount(channelID)
 	return res.LastInsertId()
 }
 
@@ -213,6 +222,44 @@ func getInitialize(c echo.Context) error {
 	db.MustExec("DELETE FROM channel WHERE id > 10")
 	db.MustExec("DELETE FROM message WHERE id > 10000")
 	db.MustExec("DELETE FROM haveread")
+	getRedisInitialize(c)
+	return c.String(204, "")
+}
+
+func getRedisInitialize(c echo.Context) error {
+	rclient.FlushAll()
+
+	channels := []ChannelInfo{}
+	err := db.Select(&channels, "SELECT * FROM channel ORDER BY id")
+	if err != nil {
+		return err
+	}
+
+	type ChannelCount struct {
+		ChannelID int64 `db:"channel_id"`
+		Cnt       int64 `db:"cnt"`
+	}
+
+	rows, err := db.Queryx(`
+	SELECT
+		message.channel_id, COUNT(1) AS cnt
+	FROM message
+	GROUP BY channel_id
+	`)
+
+	if err != nil {
+		return err
+	}
+	var row ChannelCount
+	for rows.Next() {
+		err := rows.StructScan(&row)
+		if err != nil {
+			return err
+		}
+
+		setChannelCount(row.ChannelID, row.Cnt)
+	}
+
 	return c.String(204, "")
 }
 
@@ -233,6 +280,12 @@ type ChannelInfo struct {
 	Description string    `db:"description"`
 	UpdatedAt   time.Time `db:"updated_at"`
 	CreatedAt   time.Time `db:"created_at"`
+}
+
+type HaveReadInfo struct {
+	MessageID int64     `db:"message_id"`
+	UpdatedAt time.Time `db:"updated_at"`
+	CreatedAt time.Time `db:"created_at"`
 }
 
 func getChannel(c echo.Context) error {
@@ -402,13 +455,10 @@ func getMessage(c echo.Context) error {
 	}
 
 	if len(messages) > 0 {
-		_, err := db.Exec("INSERT INTO haveread (user_id, channel_id, message_id, updated_at, created_at)"+
-			" VALUES (?, ?, ?, NOW(), NOW())"+
-			" ON DUPLICATE KEY UPDATE message_id = ?, updated_at = NOW()",
-			userID, chanID, messages[0].ID, messages[0].ID)
-		if err != nil {
-			return err
-		}
+		setHaveread(userID, chanID, messages[0].ID)
+
+		channelCnt := getChannelCount(chanID)
+		setUserChannelCount(userID, chanID, channelCnt)
 	}
 
 	return c.JSON(http.StatusOK, response)
@@ -418,27 +468,6 @@ func queryChannels() ([]int64, error) {
 	res := []int64{}
 	err := db.Select(&res, "SELECT id FROM channel")
 	return res, err
-}
-
-func queryHaveRead(userID, chID int64) (int64, error) {
-	type HaveRead struct {
-		UserID    int64     `db:"user_id"`
-		ChannelID int64     `db:"channel_id"`
-		MessageID int64     `db:"message_id"`
-		UpdatedAt time.Time `db:"updated_at"`
-		CreatedAt time.Time `db:"created_at"`
-	}
-	h := HaveRead{}
-
-	err := db.Get(&h, "SELECT * FROM haveread WHERE user_id = ? AND channel_id = ?",
-		userID, chID)
-
-	if err == sql.ErrNoRows {
-		return 0, nil
-	} else if err != nil {
-		return 0, err
-	}
-	return h.MessageID, nil
 }
 
 func fetchUnread(c echo.Context) error {
@@ -455,65 +484,27 @@ func fetchUnread(c echo.Context) error {
 	}
 	resp := []map[string]interface{}{}
 
-	var row Row
-	// process haveread
-	rows, err := db.Queryx(`
-	SELECT
-		message.channel_id, COUNT(1) AS cnt
-	FROM message
-	JOIN (
-		SELECT channel_id, message_id AS last_message_id
-		FROM haveread
-		WHERE user_id = ?
-	) AS channel_haveread ON message.channel_id = channel_haveread.channel_id
-	WHERE last_message_id < id
-	GROUP BY channel_id
-	`, userID)
-
+	// redisでhavereadを取得する
+	channels := []ChannelInfo{}
+	err := db.Select(&channels, "SELECT * FROM channel ORDER BY id")
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	for rows.Next() {
-		err := rows.StructScan(&row)
+	for _, channel := range channels {
+
+		_, err := getHaveread(userID, channel.ID)
+		var cnt int64
+		cnt = 0
 		if err != nil {
-			log.Fatal(err)
+			cnt = getChannelCount(channel.ID)
+		} else {
+			cnt = getChannelCount(channel.ID) - getUserChannelCount(userID, channel.ID)
 		}
 
 		r := map[string]interface{}{
-			"channel_id": row.ChannelID,
-			"unread":     row.Cnt,
-		}
-		resp = append(resp, r)
-	}
-
-	// process non-haveread
-	rows, err = db.Queryx(`
-	SELECT
-		message.channel_id, COUNT(1) AS cnt
-	FROM message
-	LEFT JOIN (
-		SELECT channel_id, message_id AS last_message_id
-		FROM haveread
-		WHERE user_id = ?
-	) channel_haveread ON message.channel_id = channel_haveread.channel_id
-	WHERE last_message_id = NULL
-	GROUP BY channel_id
-	`, userID)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for rows.Next() {
-		err := rows.StructScan(&row)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		r := map[string]interface{}{
-			"channel_id": row.ChannelID,
-			"unread":     row.Cnt,
+			"channel_id": channel.ID,
+			"unread":     cnt,
 		}
 		resp = append(resp, r)
 	}
@@ -806,6 +797,60 @@ func tRange(a, b int64) []int64 {
 	return r
 }
 
+// functions for handling redis
+func setHaveread(userID, chanID, messageID int64) {
+	key := fmt.Sprintf("haveread-%d-%d", userID, chanID)
+	value := fmt.Sprintf("%d,%s,%s", messageID, time.Now(), time.Now())
+	rclient.Set(key, value, 60*time.Minute).Err()
+}
+
+func getHaveread(userID, chanID int64) (HaveReadInfo, error) {
+	havereadInfo := HaveReadInfo{}
+	layout := "2006-01-02 15:04:05"
+	key := fmt.Sprintf("haveread-%d-%d", userID, chanID)
+	value, err := rclient.Get(key).Result()
+	if err == redis.Nil {
+		return havereadInfo, err
+	}
+	values := strings.Split(value, ",")
+	messageID, _ := strconv.ParseInt(values[0], 10, 64)
+	updatedAt, _ := time.Parse(layout, values[1])
+	createdAt, _ := time.Parse(layout, values[1])
+	havereadInfo = HaveReadInfo{
+		MessageID: messageID,
+		UpdatedAt: updatedAt,
+		CreatedAt: createdAt,
+	}
+	return havereadInfo, nil
+}
+
+func setChannelCount(chanID, cnt int64) {
+	key := fmt.Sprintf("channel-count-%d", chanID)
+	rclient.Set(key, cnt, 60*time.Minute).Err()
+}
+
+func incrChannelCount(chanID int64) {
+	key := fmt.Sprintf("channel-count-%d", chanID)
+	rclient.Incr(key)
+}
+
+func getChannelCount(chanID int64) int64 {
+	key := fmt.Sprintf("channel-count-%d", chanID)
+	val, _ := rclient.Get(key).Int64()
+	return val
+}
+
+func setUserChannelCount(userID, chanID, cnt int64) {
+	key := fmt.Sprintf("user-channel-count-%d-%d", userID, chanID)
+	rclient.Set(key, cnt, 60*time.Minute)
+}
+
+func getUserChannelCount(userID, chanID int64) int64 {
+	key := fmt.Sprintf("user-channel-count-%d-%d", userID, chanID)
+	val, _ := rclient.Get(key).Int64()
+	return val
+}
+
 func main() {
 	e := echo.New()
 	funcs := template.FuncMap{
@@ -840,7 +885,6 @@ func main() {
 
 	e.GET("add_channel", getAddChannel)
 	e.POST("add_channel", postAddChannel)
-	// e.GET("/icons/:file_name", getIcon)
 
 	e.GET("/extract_img", extractImg)
 
