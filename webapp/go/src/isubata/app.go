@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"github.com/go-redis/redis"
 	"github.com/go-sql-driver/mysql"
@@ -236,14 +237,19 @@ func getRedisInitialize(c echo.Context) error {
 	}
 
 	type ChannelCount struct {
-		ChannelID int64 `db:"channel_id"`
-		Cnt       int64 `db:"cnt"`
+		ChannelID   int64     `db:"channel_id"`
+		Name        string    `db:"name"`
+		Description string    `db:"description"`
+		UpdatedAt   time.Time `db:"updated_at"`
+		CreatedAt   time.Time `db:"created_at"`
+		Cnt         int64     `db:"cnt"`
 	}
 
 	rows, err := db.Queryx(`
 	SELECT
-		message.channel_id, COUNT(1) AS cnt
+		message.channel_id, channel.name, channel.description, channel.updated_at, channel.created_at, COUNT(1) AS cnt
 	FROM message
+	JOIN channel ON message.channel_id = channel.id
 	GROUP BY channel_id
 	`)
 
@@ -256,7 +262,7 @@ func getRedisInitialize(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-
+		addChannel(row.ChannelID, row.Name, row.Description, row.UpdatedAt, row.CreatedAt)
 		setChannelCount(row.ChannelID, row.Cnt)
 	}
 
@@ -275,11 +281,11 @@ func getIndex(c echo.Context) error {
 }
 
 type ChannelInfo struct {
-	ID          int64     `db:"id"`
-	Name        string    `db:"name"`
-	Description string    `db:"description"`
-	UpdatedAt   time.Time `db:"updated_at"`
-	CreatedAt   time.Time `db:"created_at"`
+	ID          int64     `db:"id" json:"id"`
+	Name        string    `db:"name" json:"name"`
+	Description string    `db:"description" json:"description"`
+	UpdatedAt   time.Time `db:"updated_at" json:"updated_at"`
+	CreatedAt   time.Time `db:"created_at" json:"created_at"`
 }
 
 type HaveReadInfo struct {
@@ -297,8 +303,7 @@ func getChannel(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	channels := []ChannelInfo{}
-	err = db.Select(&channels, "SELECT * FROM channel ORDER BY id")
+	channels, err := fetchChannels()
 	if err != nil {
 		return err
 	}
@@ -464,12 +469,6 @@ func getMessage(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
-func queryChannels() ([]int64, error) {
-	res := []int64{}
-	err := db.Select(&res, "SELECT id FROM channel")
-	return res, err
-}
-
 func fetchUnread(c echo.Context) error {
 	userID := sessUserID(c)
 	if userID == 0 {
@@ -485,8 +484,7 @@ func fetchUnread(c echo.Context) error {
 	resp := []map[string]interface{}{}
 
 	// redisでhavereadを取得する
-	channels := []ChannelInfo{}
-	err := db.Select(&channels, "SELECT * FROM channel ORDER BY id")
+	channels, err := fetchChannels()
 	if err != nil {
 		return err
 	}
@@ -501,7 +499,6 @@ func fetchUnread(c echo.Context) error {
 		} else {
 			cnt = getChannelCount(channel.ID) - getUserChannelCount(userID, channel.ID)
 		}
-
 		r := map[string]interface{}{
 			"channel_id": channel.ID,
 			"unread":     cnt,
@@ -565,8 +562,7 @@ func getHistory(c echo.Context) error {
 		mjson = append(mjson, r)
 	}
 
-	channels := []ChannelInfo{}
-	err = db.Select(&channels, "SELECT * FROM channel ORDER BY id")
+	channels, err := fetchChannels()
 	if err != nil {
 		return err
 	}
@@ -587,8 +583,7 @@ func getProfile(c echo.Context) error {
 		return err
 	}
 
-	channels := []ChannelInfo{}
-	err = db.Select(&channels, "SELECT * FROM channel ORDER BY id")
+	channels, err := fetchChannels()
 	if err != nil {
 		return err
 	}
@@ -618,8 +613,7 @@ func getAddChannel(c echo.Context) error {
 		return err
 	}
 
-	channels := []ChannelInfo{}
-	err = db.Select(&channels, "SELECT * FROM channel ORDER BY id")
+	channels, err := fetchChannels()
 	if err != nil {
 		return err
 	}
@@ -643,13 +637,8 @@ func postAddChannel(c echo.Context) error {
 		return ErrBadReqeust
 	}
 
-	res, err := db.Exec(
-		"INSERT INTO channel (name, description, updated_at, created_at) VALUES (?, ?, NOW(), NOW())",
-		name, desc)
-	if err != nil {
-		return err
-	}
-	lastID, _ := res.LastInsertId()
+	addChannel(-1, name, desc, time.Now(), time.Now())
+	lastID := fetchChannelNum()
 	return c.Redirect(http.StatusSeeOther,
 		fmt.Sprintf("/channel/%v", lastID))
 }
@@ -851,6 +840,45 @@ func getUserChannelCount(userID, chanID int64) int64 {
 	return val
 }
 
+func addChannel(chanID int64, name string, description string, updatedAt time.Time, createdAt time.Time) {
+	if chanID < 0 {
+		chanID = fetchChannelNum() + 1
+	}
+	channel := ChannelInfo{
+		ID:          chanID,
+		Name:        name,
+		Description: description,
+		UpdatedAt:   updatedAt,
+		CreatedAt:   createdAt,
+	}
+	serialized, _ := json.Marshal(channel)
+	rclient.RPush("channel", string(serialized))
+}
+
+func fetchChannelNum() int64 {
+	num, _ := rclient.LLen("channel").Result()
+	return num
+}
+
+func fetchChannels() ([]ChannelInfo, error) {
+	channelsStr, err := rclient.LRange("channel", 0, -1).Result()
+	var channels []ChannelInfo
+	if err != nil {
+		return channels, nil
+	}
+
+	for _, c := range channelsStr {
+		channel := ChannelInfo{}
+		data := []byte(c)
+		err := json.Unmarshal(data, &channel)
+		if err != nil {
+			return channels, err
+		}
+		channels = append(channels, channel)
+	}
+	return channels, nil
+}
+
 func main() {
 	e := echo.New()
 	funcs := template.FuncMap{
@@ -860,6 +888,7 @@ func main() {
 	e.Renderer = &Renderer{
 		templates: template.Must(template.New("").Funcs(funcs).ParseGlob("views/*.html")),
 	}
+	// e.Use(middleware.Logger())
 	e.Use(session.Middleware(sessions.NewCookieStore([]byte("secretonymoris"))))
 	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
 		Format: "request:\"${method} ${uri}\" status:${status} latency:${latency} (${latency_human}) bytes:${bytes_out}\n",
